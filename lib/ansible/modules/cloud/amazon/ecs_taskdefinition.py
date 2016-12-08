@@ -138,8 +138,14 @@ class EcsTaskManager:
             return None
 
     def register_task(self, family, container_definitions, volumes):
+        validated_containers = []
+        # Converts memory to int, as it is always passed on as a string
+        for container in container_definitions:
+            container['memory'] = int(container['memory'])
+            validated_containers.append(container)
+
         response = self.ecs.register_task_definition(family=family,
-            containerDefinitions=container_definitions, volumes=volumes)
+            containerDefinitions=validated_containers, volumes=volumes)
         return response['taskDefinition']
 
     def describe_task_definitions(self, family):
