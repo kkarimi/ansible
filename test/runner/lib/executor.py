@@ -21,10 +21,12 @@ import lib.thread
 
 from lib.core_ci import (
     AnsibleCoreCI,
+    SshKey,
 )
 
 from lib.manage_ci import (
     ManageWindowsCI,
+    ManageNetworkCI,
 )
 
 from lib.util import (
@@ -74,6 +76,7 @@ SUPPORTED_PYTHON_VERSIONS = (
     '2.6',
     '2.7',
     '3.5',
+    '3.6',
 )
 
 COMPILE_PYTHON_VERSIONS = tuple(sorted(SUPPORTED_PYTHON_VERSIONS + ('2.4',)))
@@ -181,7 +184,103 @@ def command_network_integration(args):
     :type args: NetworkIntegrationConfig
     """
     internal_targets = command_integration_filter(args, walk_network_integration_targets())
+    platform_targets = set(a for t in internal_targets for a in t.aliases if a.startswith('network/'))
+
+    if args.platform:
+        instances = []  # type: list [lib.thread.WrappedThread]
+
+        # generate an ssh key (if needed) up front once, instead of for each instance
+        SshKey(args)
+
+        for platform_version in args.platform:
+            platform, version = platform_version.split('/', 1)
+            platform_target = 'network/%s/' % platform
+
+            if platform_target not in platform_targets and 'network/basics/' not in platform_targets:
+                display.warning('Skipping "%s" because selected tests do not target the "%s" platform.' % (
+                    platform_version, platform))
+                continue
+
+            instance = lib.thread.WrappedThread(functools.partial(network_run, args, platform, version))
+            instance.daemon = True
+            instance.start()
+            instances.append(instance)
+
+        install_command_requirements(args)
+
+        while any(instance.is_alive() for instance in instances):
+            time.sleep(1)
+
+        remotes = [instance.wait_for_result() for instance in instances]
+        inventory = network_inventory(remotes)
+
+        filename = 'test/integration/inventory.networking'
+
+        display.info('>>> Inventory: %s\n%s' % (filename, inventory.strip()), verbosity=3)
+
+        if not args.explain:
+            with open(filename, 'w') as inventory_fd:
+                inventory_fd.write(inventory)
+    else:
+        install_command_requirements(args)
+
     command_integration_filtered(args, internal_targets)
+
+
+def network_run(args, platform, version):
+    """
+    :type args: NetworkIntegrationConfig
+    :type platform: str
+    :type version: str
+    :rtype: AnsibleCoreCI
+    """
+
+    core_ci = AnsibleCoreCI(args, platform, version, stage=args.remote_stage)
+    core_ci.start()
+    core_ci.wait()
+
+    manage = ManageNetworkCI(core_ci)
+    manage.wait()
+
+    return core_ci
+
+
+def network_inventory(remotes):
+    """
+    :type remotes: list[AnsibleCoreCI]
+    :rtype: str
+    """
+    groups = dict([(remote.platform, []) for remote in remotes])
+
+    for remote in remotes:
+        options = dict(
+            ansible_host=remote.connection.hostname,
+            ansible_user=remote.connection.username,
+            ansible_connection='network_cli',
+            ansible_ssh_private_key_file=remote.ssh_key.key,
+            ansible_network_os=remote.platform,
+        )
+
+        groups[remote.platform].append(
+            '%s %s' % (
+                remote.name.replace('.', '_'),
+                ' '.join('%s="%s"' % (k, options[k]) for k in sorted(options)),
+            )
+        )
+
+    template = ''
+
+    for group in groups:
+        hosts = '\n'.join(groups[group])
+
+        template += textwrap.dedent("""
+        [%s]
+        %s
+        """) % (group, hosts)
+
+    inventory = template
+
+    return inventory
 
 
 def command_windows_integration(args):
@@ -207,8 +306,12 @@ def command_windows_integration(args):
         remotes = [instance.wait_for_result() for instance in instances]
         inventory = windows_inventory(remotes)
 
+        filename = 'test/integration/inventory.winrm'
+
+        display.info('>>> Inventory: %s\n%s' % (filename, inventory.strip()), verbosity=3)
+
         if not args.explain:
-            with open('test/integration/inventory.winrm', 'w') as inventory_fd:
+            with open(filename, 'w') as inventory_fd:
                 inventory_fd.write(inventory)
     else:
         install_command_requirements(args)
@@ -240,15 +343,22 @@ def windows_inventory(remotes):
     :type remotes: list[AnsibleCoreCI]
     :rtype: str
     """
-    hosts = ['%s ansible_host=%s ansible_user=%s ansible_password="%s" ansible_port=%s' %
-             (
-                 remote.name.replace('/', '_'),
-                 remote.connection.hostname,
-                 remote.connection.username,
-                 remote.connection.password,
-                 remote.connection.port,
-             )
-             for remote in remotes]
+    hosts = []
+
+    for remote in remotes:
+        options = dict(
+            ansible_host=remote.connection.hostname,
+            ansible_user=remote.connection.username,
+            ansible_password=remote.connection.password,
+            ansible_port=remote.connection.port,
+        )
+
+        hosts.append(
+            '%s %s' % (
+                remote.name.replace('/', '_'),
+                ' '.join('%s="%s"' % (k, options[k]) for k in sorted(options)),
+            )
+        )
 
     template = """
     [windows]
@@ -427,9 +537,11 @@ def command_integration_role(args, target, start_at_task):
         hosts = 'windows'
         gather_facts = False
     elif 'network/' in target.aliases:
-        inventory = 'inventory.network'
+        inventory = 'inventory.networking'
         hosts = target.name[:target.name.find('_')]
         gather_facts = False
+        if hosts == 'net':
+            hosts = 'all'
     else:
         inventory = 'inventory'
         hosts = 'testhost'
@@ -632,7 +744,10 @@ def command_sanity_code_smell(args, _):
         skip_tests = skip_fd.read().splitlines()
 
     tests = glob.glob('test/sanity/code-smell/*')
-    tests = sorted(p for p in tests if os.access(p, os.X_OK) and os.path.basename(p) not in skip_tests)
+    tests = sorted(p for p in tests
+                   if os.access(p, os.X_OK)
+                   and os.path.isfile(p)
+                   and os.path.basename(p) not in skip_tests)
 
     for test in tests:
         display.info('Code smell check using %s' % os.path.basename(test))
@@ -720,7 +835,7 @@ def command_sanity_ansible_doc(args, targets, python_version):
     stdout, stderr = intercept_command(args, cmd, env=env, capture=True, python_version=python_version)
 
     if stderr:
-        # consider any output on stderr an error, even though the return code is zero
+        display.error('Output on stderr from ansible-doc is considered an error.')
         raise SubprocessError(cmd, stderr=stderr)
 
     if stdout:
@@ -924,8 +1039,8 @@ def detect_changes_local(args):
 
 def docker_qualify_image(name):
     """
-    :type name: str | None
-    :rtype: str | None
+    :type name: str
+    :rtype: str
     """
     if not name or any((c in name) for c in ('/', ':')):
         return name
@@ -1102,7 +1217,10 @@ class EnvironmentConfig(CommonConfig):
         self.remote = args.remote  # type: str
 
         self.docker_privileged = args.docker_privileged if 'docker_privileged' in args else False  # type: bool
-        self.docker_util = docker_qualify_image(args.docker_util if 'docker_util' in args else None)  # type: str | None
+        self.docker_util = docker_qualify_image(args.docker_util if 'docker_util' in args else '')  # type: str
+        self.docker_pull = args.docker_pull if 'docker_pull' in args else False  # type: bool
+
+        self.tox_sitepackages = args.tox_sitepackages  # type: bool
 
         self.remote_stage = args.remote_stage  # type: str
 
@@ -1207,6 +1325,8 @@ class NetworkIntegrationConfig(IntegrationConfig):
         :type args: any
         """
         super(NetworkIntegrationConfig, self).__init__(args, 'network-integration')
+
+        self.platform = args.platform  # type list [str]
 
 
 class UnitsConfig(TestConfig):

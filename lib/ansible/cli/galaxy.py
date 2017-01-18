@@ -369,9 +369,19 @@ class GalaxyCLI(CLI):
             display.vvv('Installing role %s ' % role.name)
             # query the galaxy API for the role data
 
-            if role.install_info is not None and not force:
-                display.display('- %s is already installed, skipping.' % role.name)
-                continue
+            if role.install_info is not None:
+                if role.install_info['version'] != role.version:
+                    if force:
+                        display.display('- changing role %s from %s to %s' %
+                                        (role.name, role.install_info['version'], role.version or "unspecified"))
+                        role.remove()
+                    else:
+                        display.warning('- %s (%s) is already installed - use --force to change version to %s' %
+                                        (role.name, role.install_info['version'], role.version or "unspecified"))
+                        continue
+                else:
+                    display.display('- %s is already installed, skipping.' % str(role))
+                    continue
 
             try:
                 installed = role.install()
@@ -392,14 +402,18 @@ class GalaxyCLI(CLI):
                         # we know we can skip this, as it's not going to
                         # be found on galaxy.ansible.com
                         continue
-                    if dep_role.install_info is None or force:
+                    if dep_role.install_info is None:
                         if dep_role not in roles_left:
-                            display.display('- adding dependency: %s' % dep_role.name)
+                            display.display('- adding dependency: %s' % str(dep_role))
                             roles_left.append(dep_role)
                         else:
                             display.display('- dependency %s already pending installation.' % dep_role.name)
                     else:
-                        display.display('- dependency %s is already installed, skipping.' % dep_role.name)
+                        if dep_role.install_info['version'] != dep_role.version:
+                            display.warning('- dependency %s from role %s differs from already installed version (%s), skipping' %
+                                            (str(dep_role), role.name, dep_role.install_info['version']))
+                        else:
+                            display.display('- dependency %s is already installed, skipping.' % dep_role.name)
 
             if not installed:
                 display.warning("- %s was NOT installed successfully." % role.name)
@@ -521,7 +535,7 @@ class GalaxyCLI(CLI):
 
     def execute_login(self):
         """
-        Verify user's identify via Github and retreive an auth token from Galaxy.
+        Verify user's identify via Github and retrieve an auth token from Galaxy.
         """
         # Authenticate with github and retrieve a token
         if self.options.token is None:
@@ -540,7 +554,7 @@ class GalaxyCLI(CLI):
         token = GalaxyToken()
         token.set(galaxy_response['token'])
 
-        display.display("Succesfully logged into Galaxy as %s" % galaxy_response['username'])
+        display.display("Successfully logged into Galaxy as %s" % galaxy_response['username'])
         return 0
 
     def execute_import(self):

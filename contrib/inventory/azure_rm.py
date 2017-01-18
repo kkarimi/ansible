@@ -309,7 +309,7 @@ class AzureRM(object):
 
     def _get_env_credentials(self):
         env_credentials = dict()
-        for attribute, env_variable in AZURE_CREDENTIAL_ENV_MAPPING.iteritems():
+        for attribute, env_variable in AZURE_CREDENTIAL_ENV_MAPPING.items():
             env_credentials[attribute] = os.environ.get(env_variable, None)
 
         if env_credentials['profile'] is not None:
@@ -328,7 +328,7 @@ class AzureRM(object):
         self.log('Getting credentials')
 
         arg_credentials = dict()
-        for attribute, env_variable in AZURE_CREDENTIAL_ENV_MAPPING.iteritems():
+        for attribute, env_variable in AZURE_CREDENTIAL_ENV_MAPPING.items():
             arg_credentials[attribute] = getattr(params, attribute)
 
         # try module params
@@ -362,7 +362,11 @@ class AzureRM(object):
             resource_client = self.rm_client
             resource_client.providers.register(key)
         except Exception as exc:
-            self.fail("One-time registration of {0} failed - {1}".format(key, str(exc)))
+            self.log("One-time registration of {0} failed - {1}".format(key, str(exc)))
+            self.log("You might need to register {0} using an admin account".format(key))
+            self.log(("To register a provider using the Python CLI: "
+                      "https://docs.microsoft.com/azure/azure-resource-manager/"
+                      "resource-manager-common-deployment-errors#noregisteredproviderfound"))
 
     @property
     def network_client(self):
@@ -664,7 +668,7 @@ class AzureInventory(object):
         self._inventory['azure'].append(host_name)
 
         if self.group_by_tag and vars.get('tags'):
-            for key, value in vars['tags'].iteritems():
+            for key, value in vars['tags'].items():
                 safe_key = self._to_safe(key)
                 safe_value = safe_key + '_' + self._to_safe(value)
                 if not self._inventory.get(safe_key):
@@ -724,7 +728,7 @@ class AzureInventory(object):
 
     def _get_env_settings(self):
         env_settings = dict()
-        for attribute, env_variable in AZURE_CONFIG_SETTINGS.iteritems():
+        for attribute, env_variable in AZURE_CONFIG_SETTINGS.items():
             env_settings[attribute] = os.environ.get(env_variable, None)
         return env_settings
 

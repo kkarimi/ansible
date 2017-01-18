@@ -19,6 +19,7 @@
 #
 
 import inspect
+import os
 import time
 
 from abc import ABCMeta, abstractmethod
@@ -28,7 +29,6 @@ from enum import Enum
 
 try:
     import ovirtsdk4 as sdk
-    import ovirtsdk4.types as otypes
     import ovirtsdk4.version as sdk_version
     HAS_SDK = LooseVersion(sdk_version.VERSION) >= LooseVersion('4.0.0')
 except ImportError:
@@ -126,6 +126,7 @@ def create_connection(auth):
         kerberos=auth.get('kerberos', None),
     )
 
+
 def convert_to_bytes(param):
     """
     This method convert units to bytes, which follow IEC standard.
@@ -209,7 +210,7 @@ def search_by_attributes(service, **kwargs):
     else:
         res = [
             e for e in service.list() if len([
-                 k for k, v in kwargs.items() if getattr(e, k, None) == v
+                k for k, v in kwargs.items() if getattr(e, k, None) == v
             ]) == len(kwargs)
         ]
 
@@ -246,6 +247,20 @@ def search_by_name(service, name, **kwargs):
     return res[0]
 
 
+def get_entity(service):
+    """
+    Ignore SDK Error in case of getting an entity from service.
+    """
+    entity = None
+    try:
+        entity = service.get()
+    except sdk.Error:
+        # We can get here 404, we should ignore it, in case
+        # of removing entity for example.
+        pass
+    return entity
+
+
 def wait(
     service,
     condition,
@@ -269,7 +284,7 @@ def wait(
         start = time.time()
         while time.time() < start + timeout:
             # Exit if the condition of entity is valid:
-            entity = service.get()
+            entity = get_entity(service)
             if condition(entity):
                 return
             elif fail_condition(entity):
@@ -277,6 +292,32 @@ def wait(
 
             # Sleep for `poll_interval` seconds if nor of the conditions apply:
             time.sleep(float(poll_interval))
+
+
+def __get_auth_dict():
+    OVIRT_URL = os.environ.get('OVIRT_URL')
+    OVIRT_USERNAME = os.environ.get('OVIRT_USERNAME')
+    OVIRT_PASSWORD = os.environ.get('OVIRT_PASSWORD')
+    OVIRT_TOKEN = os.environ.get('OVIRT_TOKEN')
+    OVIRT_CAFILE = os.environ.get('OVIRT_CAFILE')
+    OVIRT_INSECURE = OVIRT_CAFILE is None
+
+    env_vars = None
+    if OVIRT_URL and ((OVIRT_USERNAME and OVIRT_PASSWORD) or OVIRT_TOKEN):
+        env_vars = {
+            'url': OVIRT_URL,
+            'username': OVIRT_USERNAME,
+            'password': OVIRT_PASSWORD,
+            'insecure': OVIRT_INSECURE,
+            'token': OVIRT_TOKEN,
+            'ca_file': OVIRT_CAFILE,
+        }
+    if env_vars is not None:
+        auth = dict(default=env_vars, type='dict')
+    else:
+        auth = dict(required=True, type='dict')
+
+    return auth
 
 
 def ovirt_facts_full_argument_spec(**kwargs):
@@ -288,7 +329,7 @@ def ovirt_facts_full_argument_spec(**kwargs):
     :return: extended dictionary with common parameters
     """
     spec = dict(
-        auth=dict(required=True, type='dict'),
+        auth=__get_auth_dict(),
         fetch_nested=dict(default=False, type='bool'),
         nested_attributes=dict(type='list'),
     )
@@ -304,7 +345,7 @@ def ovirt_full_argument_spec(**kwargs):
     :return: extended dictionary with common parameters
     """
     spec = dict(
-        auth=dict(required=True, type='dict'),
+        auth=__get_auth_dict(),
         timeout=dict(default=180, type='int'),
         wait=dict(default=True, type='bool'),
         poll_interval=dict(default=3, type='int'),
@@ -460,7 +501,12 @@ class BaseModule(object):
         return {
             'changed': self.changed,
             'id': entity.id,
-            type(entity).__name__.lower(): get_dict_of_struct(entity),
+            type(entity).__name__.lower(): get_dict_of_struct(
+                struct=entity,
+                connection=self._connection,
+                fetch_nested=self._module.params.get('fetch_nested'),
+                attributes=self._module.params.get('nested_attributes'),
+            ),
         }
 
     def pre_remove(self, entity):
@@ -512,7 +558,12 @@ class BaseModule(object):
         return {
             'changed': self.changed,
             'id': entity.id,
-            type(entity).__name__.lower(): get_dict_of_struct(entity),
+            type(entity).__name__.lower(): get_dict_of_struct(
+                struct=entity,
+                connection=self._connection,
+                fetch_nested=self._module.params.get('fetch_nested'),
+                attributes=self._module.params.get('nested_attributes'),
+            ),
         }
 
     def action(
@@ -582,7 +633,12 @@ class BaseModule(object):
         return {
             'changed': self.changed,
             'id': entity.id,
-            type(entity).__name__.lower(): get_dict_of_struct(entity),
+            type(entity).__name__.lower(): get_dict_of_struct(
+                struct=entity,
+                connection=self._connection,
+                fetch_nested=self._module.params.get('fetch_nested'),
+                attributes=self._module.params.get('nested_attributes'),
+            ),
         }
 
     def search_entity(self, search_params=None):

@@ -215,6 +215,7 @@ EXAMPLES = '''
     path: ./sinatra
     name: registry.ansible.com/chouseknecht/sinatra
     tag: v1
+    push: yes
 
 - name: Archive image
   docker_image:
@@ -249,7 +250,10 @@ image:
 from ansible.module_utils.docker_common import *
 
 try:
-    from docker.auth.auth import resolve_repository_name
+    if HAS_DOCKER_PY_2:
+        from docker.auth import resolve_repository_name
+    else:
+        from docker.auth.auth import resolve_repository_name
     from docker.utils.utils import parse_repository_tag
 except ImportError:
     # missing docker-py handled in docker_common
@@ -509,7 +513,7 @@ class ImageManager(DockerBaseClass):
         if self.container_limits:
             params['container_limits'] = self.container_limits
         if self.buildargs:
-            for key, value in self.buildargs.iteritems():
+            for key, value in self.buildargs.items():
                 if not isinstance(value, basestring):
                     self.buildargs[key] = str(value)
             params['buildargs'] = self.buildargs

@@ -21,8 +21,8 @@
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.pycompat24 import get_exception
-from ansible.module_utils.urls import fetch_url
-from ansible.module_utils.urls import url_argument_spec
+from ansible.module_utils.urls import fetch_url, url_argument_spec
+from ansible.module_utils._text import to_native
 import base64
 import hashlib
 import json
@@ -120,15 +120,18 @@ options:
         manually.
       - It might take longer to verify that the correct version is installed.
         This is especially true if a specific version number is specified.
+      - Quote the version to prevent the value to be interpreted as float. For
+        example if C(1.20) would be unquoted, it would become C(1.2).
   with_dependencies:
     required: false
     choices: ['yes', 'no']
     default: 'yes'
     description:
       - Defines whether to install plugin dependencies.
+      - This option takes effect only if the I(version) is not defined.
 
 notes:
-  - Plugin installation shoud be run under root or the same user which owns
+  - Plugin installation should be run under root or the same user which owns
     the plugin files on the disk. Only if the plugin is not installed yet and
     no version is specified, the API installation is performed which requires
     only the Web UI credentials.
@@ -159,7 +162,7 @@ EXAMPLES = '''
 - name: Install specific version of the plugin
   jenkins_plugin:
     name: token-macro
-    version: 1.15
+    version: "1.15"
 
 - name: Pin the plugin
   jenkins_plugin:
@@ -212,7 +215,7 @@ EXAMPLES = '''
       token-macro:
         enabled: yes
       build-pipeline-plugin:
-        version: 1.4.9
+        version: "1.4.9"
         pinned: no
         enabled: yes
   tasks:
@@ -575,24 +578,15 @@ class JenkinsPlugin(object):
 
             # Write the updates file
             update_fd, updates_file = tempfile.mkstemp()
+            os.write(update_fd, r.read())
 
             try:
-                fd = open(updates_file, 'wb')
-            except IOError:
-                e = get_exception()
-                self.module.fail_json(
-                    msg="Cannot open the tmp updates file %s." % updates_file,
-                    details=str(e))
-
-            fd.write(r.read())
-
-            try:
-                fd.close()
+                os.close(update_fd)
             except IOError:
                 e = get_exception()
                 self.module.fail_json(
                     msg="Cannot close the tmp updates file %s." % updates_file,
-                    detail=str(e))
+                    details=to_native(e))
 
         # Open the updates file
         try:
@@ -601,7 +595,7 @@ class JenkinsPlugin(object):
             e = get_exception()
             self.module.fail_json(
                 msg="Cannot open temporal updates file.",
-                details=str(e))
+                details=to_native(e))
 
         i = 0
         for line in f:
@@ -651,30 +645,20 @@ class JenkinsPlugin(object):
 
     def _write_file(self, f, data):
         # Store the plugin into a temp file and then move it
-        tmp_f_tuple, tmp_f = tempfile.mkstemp()
-
-        try:
-            fd = open(tmp_f, 'wb')
-        except IOError:
-            e = get_exception()
-            self.module.fail_json(
-                msg='Cannot open the temporal plugin file %s.' % tmp_f,
-                details=str(e))
+        tmp_f_fd, tmp_f = tempfile.mkstemp()
 
         if isinstance(data, str):
-            d = data
+            os.write(tmp_f_fd, data)
         else:
-            d = data.read()
-
-        fd.write(d)
+            os.write(tmp_f_fd, data.read())
 
         try:
-            fd.close()
+            os.close(tmp_f_fd)
         except IOError:
             e = get_exception()
             self.module.fail_json(
                 msg='Cannot close the temporal plugin file %s.' % tmp_f,
-                details=str(e))
+                details=to_native(e))
 
         # Move the file onto the right place
         self.module.atomic_move(tmp_f, f)
@@ -801,7 +785,7 @@ def main():
         e = get_exception()
         module.fail_json(
             msg='Cannot convert %s to float.' % module.params['timeout'],
-            details=str(e))
+            details=to_native(e))
 
     # Set version to latest if state is latest
     if module.params['state'] == 'latest':
